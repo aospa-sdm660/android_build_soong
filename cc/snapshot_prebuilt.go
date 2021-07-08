@@ -35,12 +35,12 @@ type snapshotImage interface {
 	// Function that returns true if the module is included in this image.
 	// Using a function return instead of a value to prevent early
 	// evalution of a function that may be not be defined.
-	inImage(m *Module) func() bool
+	inImage(m LinkableInterface) func() bool
 
 	// Returns true if the module is private and must not be included in the
 	// snapshot. For example VNDK-private modules must return true for the
 	// vendor snapshots. But false for the recovery snapshots.
-	private(m *Module) bool
+	private(m LinkableInterface) bool
 
 	// Returns true if a dir under source tree is an SoC-owned proprietary
 	// directory, such as device/, vendor/, etc.
@@ -56,7 +56,7 @@ type snapshotImage interface {
 	// Whether a given module has been explicitly excluded from the
 	// snapshot, e.g., using the exclude_from_vendor_snapshot or
 	// exclude_from_recovery_snapshot properties.
-	excludeFromSnapshot(m *Module) bool
+	excludeFromSnapshot(m LinkableInterface) bool
 
 	// Returns true if the build is using a snapshot for this image.
 	isUsingSnapshot(cfg android.DeviceConfig) bool
@@ -127,11 +127,11 @@ func (vendorSnapshotImage) shouldGenerateSnapshot(ctx android.SingletonContext) 
 	return ctx.DeviceConfig().VndkVersion() == "current"
 }
 
-func (vendorSnapshotImage) inImage(m *Module) func() bool {
+func (vendorSnapshotImage) inImage(m LinkableInterface) func() bool {
 	return m.InVendor
 }
 
-func (vendorSnapshotImage) private(m *Module) bool {
+func (vendorSnapshotImage) private(m LinkableInterface) bool {
 	return m.IsVndkPrivate()
 }
 
@@ -161,7 +161,7 @@ func (vendorSnapshotImage) includeVndk() bool {
 	return true
 }
 
-func (vendorSnapshotImage) excludeFromSnapshot(m *Module) bool {
+func (vendorSnapshotImage) excludeFromSnapshot(m LinkableInterface) bool {
 	return m.ExcludeFromVendorSnapshot()
 }
 
@@ -208,12 +208,12 @@ func (recoverySnapshotImage) shouldGenerateSnapshot(ctx android.SingletonContext
 	return ctx.DeviceConfig().RecoverySnapshotVersion() == "current"
 }
 
-func (recoverySnapshotImage) inImage(m *Module) func() bool {
+func (recoverySnapshotImage) inImage(m LinkableInterface) func() bool {
 	return m.InRecovery
 }
 
 // recovery snapshot does not have private libraries.
-func (recoverySnapshotImage) private(m *Module) bool {
+func (recoverySnapshotImage) private(m LinkableInterface) bool {
 	return false
 }
 
@@ -226,7 +226,7 @@ func (recoverySnapshotImage) includeVndk() bool {
 	return false
 }
 
-func (recoverySnapshotImage) excludeFromSnapshot(m *Module) bool {
+func (recoverySnapshotImage) excludeFromSnapshot(m LinkableInterface) bool {
 	return m.ExcludeFromRecoverySnapshot()
 }
 
@@ -455,14 +455,50 @@ func (p *baseSnapshotDecorator) snapshotAndroidMkSuffix() string {
 	return p.baseProperties.Androidmk_suffix
 }
 
-func (p *baseSnapshotDecorator) setSnapshotAndroidMkSuffix(ctx android.ModuleContext) {
-	if ctx.OtherModuleDependencyVariantExists([]blueprint.Variation{
-		{Mutator: "image", Variation: android.CoreVariation},
-	}, ctx.Module().(*Module).BaseModuleName()) {
+func (p *baseSnapshotDecorator) setSnapshotAndroidMkSuffix(ctx android.ModuleContext, variant string) {
+	// If there are any 2 or more variations among {core, product, vendor, recovery}
+	// we have to add the androidmk suffix to avoid duplicate modules with the same
+	// name.
+	variations := append(ctx.Target().Variations(), blueprint.Variation{
+		Mutator:   "image",
+		Variation: android.CoreVariation})
+
+	if ctx.OtherModuleFarDependencyVariantExists(variations, ctx.Module().(*Module).BaseModuleName()) {
 		p.baseProperties.Androidmk_suffix = p.image.moduleNameSuffix()
-	} else {
-		p.baseProperties.Androidmk_suffix = ""
+		return
 	}
+
+	variations = append(ctx.Target().Variations(), blueprint.Variation{
+		Mutator:   "image",
+		Variation: ProductVariationPrefix + ctx.DeviceConfig().PlatformVndkVersion()})
+
+	if ctx.OtherModuleFarDependencyVariantExists(variations, ctx.Module().(*Module).BaseModuleName()) {
+		p.baseProperties.Androidmk_suffix = p.image.moduleNameSuffix()
+		return
+	}
+
+	images := []snapshotImage{vendorSnapshotImageSingleton, recoverySnapshotImageSingleton}
+
+	for _, image := range images {
+		if p.image == image {
+			continue
+		}
+		variations = append(ctx.Target().Variations(), blueprint.Variation{
+			Mutator:   "image",
+			Variation: image.imageVariantName(ctx.DeviceConfig())})
+
+		if ctx.OtherModuleFarDependencyVariantExists(variations,
+			ctx.Module().(*Module).BaseModuleName()+
+				getSnapshotNameSuffix(
+					image.moduleNameSuffix()+variant,
+					p.version(),
+					ctx.DeviceConfig().Arches()[0].ArchType.String())) {
+			p.baseProperties.Androidmk_suffix = p.image.moduleNameSuffix()
+			return
+		}
+	}
+
+	p.baseProperties.Androidmk_suffix = ""
 }
 
 // Call this with a module suffix after creating a snapshot module, such as
@@ -551,7 +587,16 @@ func (p *snapshotLibraryDecorator) matchesWithDevice(config android.DeviceConfig
 // As snapshots are prebuilts, this just returns the prebuilt binary after doing things which are
 // done by normal library decorator, e.g. exporting flags.
 func (p *snapshotLibraryDecorator) link(ctx ModuleContext, flags Flags, deps PathDeps, objs Objects) android.Path {
-	p.setSnapshotAndroidMkSuffix(ctx)
+	var variant string
+	if p.shared() {
+		variant = snapshotSharedSuffix
+	} else if p.static() {
+		variant = snapshotStaticSuffix
+	} else {
+		variant = snapshotHeaderSuffix
+	}
+
+	p.setSnapshotAndroidMkSuffix(ctx, variant)
 
 	if p.header() {
 		return p.libraryDecorator.link(ctx, flags, deps, objs)
@@ -769,7 +814,7 @@ func (p *snapshotBinaryDecorator) matchesWithDevice(config android.DeviceConfig)
 // cc modules' link functions are to link compiled objects into final binaries.
 // As snapshots are prebuilts, this just returns the prebuilt binary
 func (p *snapshotBinaryDecorator) link(ctx ModuleContext, flags Flags, deps PathDeps, objs Objects) android.Path {
-	p.setSnapshotAndroidMkSuffix(ctx)
+	p.setSnapshotAndroidMkSuffix(ctx, snapshotBinarySuffix)
 
 	if !p.matchesWithDevice(ctx.DeviceConfig()) {
 		return nil
@@ -864,7 +909,7 @@ func (p *snapshotObjectLinker) matchesWithDevice(config android.DeviceConfig) bo
 // cc modules' link functions are to link compiled objects into final binaries.
 // As snapshots are prebuilts, this just returns the prebuilt binary
 func (p *snapshotObjectLinker) link(ctx ModuleContext, flags Flags, deps PathDeps, objs Objects) android.Path {
-	p.setSnapshotAndroidMkSuffix(ctx)
+	p.setSnapshotAndroidMkSuffix(ctx, snapshotObjectSuffix)
 
 	if !p.matchesWithDevice(ctx.DeviceConfig()) {
 		return nil

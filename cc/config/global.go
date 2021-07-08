@@ -30,20 +30,9 @@ import (
 	"android/soong/remoteexec"
 )
 
-type TechPackage struct {
-	XMLName         xml.Name `xml:"techpackage"`
-	TechPackageName string   `xml:"techpackagename"`
-	Enabled         string   `xml:"enable"`
-	Library         []string `xml:"library"`
-}
-type TechPackages struct {
-	XMLName      xml.Name      `xml:"techpackages"`
-	TechPackages []TechPackage `xml:"techpackage"`
-}
-
-type TechPackageLibs struct {
-	EnabledLibs  []string
-	DisabledLibs []string
+type QiifaAbiLibs struct {
+	XMLName         xml.Name `xml:"abilibs"`
+        Library         []string `xml:"library"`
 }
 
 var (
@@ -172,7 +161,6 @@ var (
 
 	SDClang             = false
 	SDClangPath         = ""
-	TechPackageLibsList = &TechPackageLibs{}
 	ForceSDClangOff     = false
 
 	// prebuilts/clang default settings.
@@ -188,6 +176,7 @@ var (
 
 	// Directories with warnings from Android.mk files.
 	WarningAllowedOldProjects = []string{}
+        QiifaAbiLibraryList       = []string{}
 )
 
 var pctx = android.NewPackageContext("android/soong/cc/config")
@@ -199,25 +188,33 @@ func init() {
 	qiifaBuildConfig := os.Getenv("QIIFA_BUILD_CONFIG")
 	if _, err := os.Stat(qiifaBuildConfig); !os.IsNotExist(err) {
 		data, _ := ioutil.ReadFile(qiifaBuildConfig)
-		var techpackages TechPackages
-		_ = xml.Unmarshal([]byte(data), &techpackages)
-		for i := 0; i < len(techpackages.TechPackages); i++ {
-			for j := 0; j < len(techpackages.TechPackages[i].Library); j++ {
-				if techpackages.TechPackages[i].Enabled == "enabled" {
-					TechPackageLibsList.EnabledLibs = append(TechPackageLibsList.EnabledLibs, techpackages.TechPackages[i].Library[j])
-				} else {
-					TechPackageLibsList.DisabledLibs = append(TechPackageLibsList.DisabledLibs, techpackages.TechPackages[i].Library[j])
-				}
-			}
-		}
-	}
-	pctx.StaticVariable("CommonGlobalConlyflags", strings.Join(commonGlobalConlyflags, " "))
-	pctx.StaticVariable("DeviceGlobalCppflags", strings.Join(deviceGlobalCppflags, " "))
-	pctx.StaticVariable("DeviceGlobalLdflags", strings.Join(deviceGlobalLdflags, " "))
-	pctx.StaticVariable("DeviceGlobalLldflags", strings.Join(deviceGlobalLldflags, " "))
-	pctx.StaticVariable("HostGlobalCppflags", strings.Join(hostGlobalCppflags, " "))
-	pctx.StaticVariable("HostGlobalLdflags", strings.Join(hostGlobalLdflags, " "))
-	pctx.StaticVariable("HostGlobalLldflags", strings.Join(hostGlobalLldflags, " "))
+		var qiifalibs QiifaAbiLibs
+		_ = xml.Unmarshal([]byte(data), &qiifalibs)
+                for i := 0; i < len(qiifalibs.Library); i++ {
+                    QiifaAbiLibraryList = append(QiifaAbiLibraryList, qiifalibs.Library[i])
+
+                }
+        }
+
+	staticVariableExportedToBazel("CommonGlobalConlyflags", commonGlobalConlyflags)
+	staticVariableExportedToBazel("DeviceGlobalCppflags", deviceGlobalCppflags)
+	staticVariableExportedToBazel("DeviceGlobalLdflags", deviceGlobalLdflags)
+	staticVariableExportedToBazel("DeviceGlobalLldflags", deviceGlobalLldflags)
+	staticVariableExportedToBazel("HostGlobalCppflags", hostGlobalCppflags)
+	staticVariableExportedToBazel("HostGlobalLdflags", hostGlobalLdflags)
+	staticVariableExportedToBazel("HostGlobalLldflags", hostGlobalLldflags)
+
+	// Export the static default CommonClangGlobalCflags to Bazel.
+	// TODO(187086342): handle cflags that are set in VariableFuncs.
+	commonClangGlobalCFlags := append(
+		ClangFilterUnknownCflags(commonGlobalCflags),
+		[]string{
+			"${ClangExtraCflags}",
+			// Default to zero initialization.
+			"-ftrivial-auto-var-init=zero",
+			"-enable-trivial-auto-var-init-zero-knowing-it-will-be-removed-from-clang",
+		}...)
+	exportedVars.Set("CommonClangGlobalCflags", variableValue(commonClangGlobalCFlags))
 
 	pctx.VariableFunc("CommonClangGlobalCflags", func(ctx android.PackageVarContext) string {
 		flags := ClangFilterUnknownCflags(commonGlobalCflags)
@@ -236,26 +233,26 @@ func init() {
 			// Default to zero initialization.
 			flags = append(flags, "-ftrivial-auto-var-init=zero -enable-trivial-auto-var-init-zero-knowing-it-will-be-removed-from-clang")
 		}
-
 		return strings.Join(flags, " ")
 	})
+
+	// Export the static default DeviceClangGlobalCflags to Bazel.
+	// TODO(187086342): handle cflags that are set in VariableFuncs.
+	deviceClangGlobalCflags := append(ClangFilterUnknownCflags(deviceGlobalCflags), "${ClangExtraTargetCflags}")
+	exportedVars.Set("DeviceClangGlobalCflags", variableValue(deviceClangGlobalCflags))
 
 	pctx.VariableFunc("DeviceClangGlobalCflags", func(ctx android.PackageVarContext) string {
 		if ctx.Config().Fuchsia() {
 			return strings.Join(ClangFilterUnknownCflags(deviceGlobalCflags), " ")
 		} else {
-			return strings.Join(append(ClangFilterUnknownCflags(deviceGlobalCflags), "${ClangExtraTargetCflags}"), " ")
+			return strings.Join(deviceClangGlobalCflags, " ")
 		}
 	})
-	pctx.StaticVariable("HostClangGlobalCflags",
-		strings.Join(ClangFilterUnknownCflags(hostGlobalCflags), " "))
-	pctx.StaticVariable("NoOverrideClangGlobalCflags",
-		strings.Join(append(ClangFilterUnknownCflags(noOverrideGlobalCflags), "${ClangExtraNoOverrideCflags}"), " "))
 
-	pctx.StaticVariable("CommonClangGlobalCppflags",
-		strings.Join(append(ClangFilterUnknownCflags(commonGlobalCppflags), "${ClangExtraCppflags}"), " "))
-
-	pctx.StaticVariable("ClangExternalCflags", "${ClangExtraExternalCflags}")
+	staticVariableExportedToBazel("HostClangGlobalCflags", ClangFilterUnknownCflags(hostGlobalCflags))
+	staticVariableExportedToBazel("NoOverrideClangGlobalCflags", append(ClangFilterUnknownCflags(noOverrideGlobalCflags), "${ClangExtraNoOverrideCflags}"))
+	staticVariableExportedToBazel("CommonClangGlobalCppflags", append(ClangFilterUnknownCflags(commonGlobalCppflags), "${ClangExtraCppflags}"))
+	staticVariableExportedToBazel("ClangExternalCflags", []string{"${ClangExtraExternalCflags}"})
 
 	// Everything in these lists is a crime against abstraction and dependency tracking.
 	// Do not add anything to this list.

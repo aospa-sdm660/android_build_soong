@@ -18,6 +18,8 @@ package java
 // related module types, including their override variants.
 
 import (
+	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -721,6 +723,59 @@ func (a *AndroidApp) generateAndroidBuildActions(ctx android.ModuleContext) {
 	}
 
 	a.buildAppDependencyInfo(ctx)
+
+	config := ctx.Config().VendorConfig("vendor_clean_up_java")
+	if ctx.SocSpecific() || ctx.DeviceSpecific() {
+		output := filepath.Join(config.String("output"),
+			os.Getenv("TARGET_PRODUCT"),
+			config.String("file"))
+		split,_ := filepath.Split(output)
+		if config.String("config") == "warning" {
+			os.MkdirAll(split, os.ModePerm)
+			if outputs, err := os.OpenFile(output,
+				os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666); err == nil {
+				defer outputs.Close()
+				fmt.Fprintf(outputs,
+					"Module %s in %s hit the violation because it compile " +
+					"the java in vendor. Only prebuilt for Java Apk and Jar" +
+					" is allowed in vendor. for detail instruction, pls " +
+					"refer to go/JavaCleanUpInVendor \n",
+					ctx.ModuleName(),
+					ctx.ModuleDir())
+			} else {
+				fmt.Println("Err: ",err)
+			}
+		} else if config.String("config") == "enforcing"{
+			config_list := false
+			for _, splitstr:= range strings.Split(config.String("allowlist"), " "){
+				if strings.TrimSpace(splitstr) == ctx.ModuleName() {
+					config_list = true
+				}
+			}
+			if config_list == true {
+				os.MkdirAll(split, os.ModePerm)
+				if outputs_enforce, err := os.OpenFile(output,
+					os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666); err == nil {
+					defer outputs_enforce.Close()
+					fmt.Fprintf(outputs_enforce,
+						"Module %s in %s hit the violation because it compile " +
+						"the java in vendor. Only prebuilt for Java Apk and Jar" +
+						" is allowed in vendor. for detail instruction, pls " +
+						"refer to go/JavaCleanUpInVendor \n",
+						ctx.ModuleName(),
+						ctx.ModuleDir())
+				} else {
+					fmt.Println("Err: ",err)
+				}
+			} else {
+				ctx.PropertyErrorf("ERR", "Module " + ctx.ModuleName() +
+					" in " + ctx.ModuleDir() + " hit the violation because it " +
+					"compile the java in vendor. Only prebuilt for Java Apk and" +
+					" Jar is allowed in vendor. for detail instruction, pls" +
+					" refer to go/JavaCleanUpInVendor")
+			}
+		}
+	}
 }
 
 type appDepsInterface interface {
@@ -893,7 +948,7 @@ func (a *AndroidApp) IsNativeCoverageNeeded(ctx android.BaseModuleContext) bool 
 	return ctx.Device() && ctx.DeviceConfig().NativeCoverageEnabled()
 }
 
-func (a *AndroidApp) PreventInstall() {
+func (a *AndroidApp) SetPreventInstall() {
 	a.appProperties.PreventInstall = true
 }
 

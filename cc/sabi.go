@@ -16,7 +16,6 @@ package cc
 
 import (
 	"sync"
-
 	"android/soong/android"
 	"android/soong/cc/config"
 )
@@ -84,7 +83,7 @@ func classifySourceAbiDump(ctx android.BaseModuleContext) string {
 		return "LLNDK"
 	}
 	if m.UseVndk() && m.IsVndk() && !m.IsVndkPrivate() {
-		if m.isVndkSp() {
+		if m.IsVndkSp() {
 			if m.IsVndkExt() {
 				return "VNDK-SP-ext"
 			} else {
@@ -180,8 +179,15 @@ func shouldCreateSourceAbiDumpForLibrary(ctx android.BaseModuleContext) bool {
 // Mark the direct and transitive dependencies of libraries that need ABI check, so that ABI dumps
 // of their dependencies would be generated.
 func sabiDepsMutator(mctx android.TopDownMutatorContext) {
+	isQiifaLibrary := false
+        if m, ok := mctx.Module().(*Module); ok && m.library != nil {
+		m.library.loadQiifaMetadata(mctx)
+			if (m.library.isLibraryQiifaEnabled()){
+				isQiifaLibrary = true
+			}
+	}
 	// Escape hatch to not check any ABI dump.
-	if mctx.Config().IsEnvTrue("SKIP_ABI_CHECKS") {
+	if mctx.Config().IsEnvTrue("SKIP_ABI_CHECKS") && !isQiifaLibrary {
 		return
 	}
 	// Only create ABI dump for native shared libraries and their static library dependencies.
@@ -192,7 +198,7 @@ func sabiDepsMutator(mctx android.TopDownMutatorContext) {
 			// Mark all of its static library dependencies.
 			mctx.VisitDirectDeps(func(child android.Module) {
 				depTag := mctx.OtherModuleDependencyTag(child)
-				if libDepTag, ok := depTag.(libraryDependencyTag); ok && libDepTag.static() {
+				if IsStaticDepTag(depTag) || depTag == reuseObjTag {
 					if c, ok := child.(*Module); ok && c.sabi != nil {
 						// Mark this module so that .sdump for this static library can be generated.
 						c.sabi.Properties.ShouldCreateSourceAbiDump = true
