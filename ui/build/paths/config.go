@@ -107,6 +107,7 @@ var Configuration = map[string]PathConfig{
         "make":    Allowed,
         "nproc":    Allowed,
         "cpio":    Allowed,
+	"m4":      Allowed,
 
 	// Host toolchain is removed. In-tree toolchain should be used instead.
 	// GCC also can't find cc1 with this implementation.
