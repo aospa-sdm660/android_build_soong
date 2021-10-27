@@ -102,6 +102,9 @@ var Configuration = map[string]PathConfig{
 	"tr":      Allowed,
 	"unzip":   Allowed,
 	"zip":     Allowed,
+        "make":    Allowed,
+        "nproc":   Allowed,
+        "cpio":    Allowed,
 
 	// Host toolchain is removed. In-tree toolchain should be used instead.
 	// GCC also can't find cc1 with this implementation.
@@ -112,7 +115,7 @@ var Configuration = map[string]PathConfig{
 	"clang++":    Forbidden,
 	"gcc":        Forbidden,
 	"g++":        Forbidden,
-	"ld":         Forbidden,
+	"ld":         Allowed,
 	"ld.bfd":     Forbidden,
 	"ld.gold":    Forbidden,
 	"pkg-config": Forbidden,
